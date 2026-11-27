@@ -51,9 +51,48 @@ void matmul_blas(const float* A, const float* B, float* C, int M, int N, int K)
 //Naive triple loop matmul
 void matmul_v1(const float *A, const float *B, float *C, int M, int N, int K)
 {
-	// Add your hown naive 3-loop implementation here
+    for (int i=0; i<M; i++) {
+        for (int j=0; j<N; j++) {
+            for (int k=0; k<K; k++) {
+	        C[j*M + i] = C[j*M + i] + A[k*M + i]*B[j*K + k];
+	    }
+	}
+    }
 }
 
+void matmul_v2(const float *A, const float *B, float *C, int M, int N, int K)
+{
+    float acc = 0;
+    for (int i=0; i<M; i++) {
+        for (int j=0; j<N; j++) {
+	    acc = 0;
+            for (int k=0; k<K; k++) {
+	        acc = acc + A[k*M + i]*B[j*K + k];
+	    }
+	    C[j*M + i] = acc;
+	}
+    }
+}
+
+void matmul_v3(const float *A, const float *B, float *C, int M, int N, int K)
+{
+    float *At = (float*) calloc(M*K,sizeof(float));
+    for (int i=0;i<M;i++) {
+	for (int k=0;k<K;k++) {
+	    At[k*M + i] = A[i*K + k];
+	}
+    }
+    float acc = 0;
+    for (int i=0; i<M; i++) {
+        for (int j=0; j<N; j++) {
+	    acc = 0;
+            for (int k=0; k<K; k++) {
+	        acc = acc + At[i*K + k]*B[j*K + k];
+	    }
+	    C[j*M + i] = acc;
+	}
+    }
+}
 
 int main(int argc, char *argv[])
 {
@@ -79,7 +118,7 @@ int main(int argc, char *argv[])
 
 	init_timing(&timer);
 
-	matmul_v1(A,B,C,M,N,K); //your custom matmul implementation
+	matmul_v3(A,B,C,M,N,K); //your custom matmul implementation
 	
 	printf("Custom sgemm time: %f s\n", elapsed_time(timer));
 	
