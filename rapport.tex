@@ -1,0 +1,272 @@
+\documentclass[a4paper,DIV=16]{scrartcl}
+
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage[colorlinks=false]{hyperref}
+\usepackage{tabularx}
+\usepackage{placeins}
+
+\author{Hugo Dischert}
+\date{\today}
+\title{PSL Week : Frugal AI}
+\subtitle{Optimization of matrix multiplication}
+
+
+\begin{document}
+\maketitle
+\tableofcontents
+\FloatBarrier
+\newpage
+\section{General informations}
+\paragraph{CPU specifications.}
+The first part of this report deals with optimizing time and power consumption of matrix multiplication on CPU.
+The CPU used is an Intel i7-12700, with 12 cores (8 P-Cores and 4 E-Cores) and 20 threads (P-Cores have hyperthreading).
+It supports AVX2. 
+Each P-Core has 48 KB of L1d cache and 1280 KB of L2 cache.
+Each E-Core has 32 KB of L1d cache and all 4 share 2048 KB of L2 cache.
+The L3 cache is 25 MB.
+
+\paragraph{Methodology.}
+Every numerical result is an average on at least three runs of the algorithm. 
+Results found out to be always consistent across the three runs, with the last run being slightly longer than the first one during large matrix multiplication.
+A small CPU overheat might be involved.
+
+\paragraph{Power draw.}
+The system power draw is 6W while idle and goes up to 25W during light use.
+The monitor might be responsible for about 10 of those.
+During heavy multithread computations, the system consumption rises to 170W.
+
+\FloatBarrier
+\section{Python implementation}
+\paragraph{Naive implementation.}
+A 3-loop Python implementation multiplies two 512x512 matrices in 29.95 seconds.
+When replacing the inner loop with a numpy sum and vectorized multiplication, it achieves way faster results (0.63s for 512x512 matrices, 48 times faster).
+This is because numpy operations are compiled.
+
+\paragraph{JIT implementation.}
+Using JIT to compile the two previous implementation, the multiplication become even faster (0.09s for the 3-loop implementation, 0.13s for the numpy one).
+The numpy one is slower than the 3-loop one, probably because the compilation optimizes the inner loop as well as numpy sum and multiplication and it avoids calls to external functions.
+
+\begin{figure}[h]
+    \caption{Operations per second of each Python implementation, depending on the matrix size}
+    \label{fig:Python FLOPS}
+    \includegraphics[width=0.8\textwidth]{../saveq8/FLOPS.png}
+\end{figure}
+The curves of figure \ref{fig:Python FLOPS} tend to get closer as the matrix sizes grows.
+The 3 top curves have dents on specific values.
+Those values correspond to matrix sizes where it subsequently uses values bounded to the same cache slot, leading to many cache misses.
+This disappear when we avoid power of 2 for the matrix size. (cf. figure \ref{fig:Without dents})
+
+\begin{figure}[h]
+    \caption{Python JIT implementation, where matrix sizes are multiple of 96. The dents disappears.}
+    \label{fig:Without dents}
+    \includegraphics[width=0.8\textwidth]{../saveq8/withoutdents.png}
+\end{figure}
+
+\paragraph{Numpy matrix multiplication.}
+The numpy matrix multiplication is way faster than all 4 of these implementations as shown in figure \ref{fig:python FLOPSall}.
+The speedup is about 100 for a matrix size of 1000x1000.
+
+\begin{figure}[h]
+    \caption{Previous 4 curves comparing to numpy implementation. The 3 top curves are multiple aliases for the same numpy feature.}
+    \label{fig:python FLOPSall}
+    \includegraphics[width=\textwidth]{../saveq8/FLOPSall.png}
+\end{figure}
+
+\FloatBarrier
+\section{C implementation}
+\paragraph{Naive 3-loop implementation.}
+For a matrix size of 1920, the naive 3-loop implementation takes 17.88s without any flags.
+The O2 flag achieves 5.02s and the O3 one 5.00s, which is a fiftieth of openBLAS 0.099s.
+The figure \ref{fig:C naive} shows a huge performance drop when the matrix size reaches 1500, meaning the memory bandwidth is the performance bottleneck.
+
+\begin{figure}[h]
+    \caption{Performance of the 3-loop implementation.}
+    \label{fig:C naive}
+    \includegraphics[width=0.8\textwidth]{../saveC/naive03.png}
+\end{figure}
+
+\paragraph{Inner loop accumulator.}
+By adding an accumulator, the memory is a little bit less accessed.
+With the O2 flag, the multiplication of 1920x1920 matrices takes 4.53s.
+The memory bandwidth is still the bottleneck, as shown in figure \ref{fig:accumulator}.
+
+\begin{figure}[h]
+    \caption{Performance of the 3-loop implementation with an accumulator.}
+    \label{fig:accumulator}
+    \includegraphics[width=0.8\textwidth]{../saveC/accumulator02.png}
+\end{figure}
+
+\paragraph{Transposed matrix.}
+By transposing the first matrix, less memory bandwith is needed.
+For a matrix of 1920x1920, it takes 2.87s with the O3 flag, achieving a thirtieth of openBLAS.
+Adding the flags ffast-math, march=native and funroll-loops reduces the time to 0.48s, which is a fifth of openBLAS (tabular \ref{tab:transposed flags}).
+The ffast-math flag seems to be the most important of those flags.
+However, performances still degrade with the matrix size (cf. figure \ref{fig:transposed}).
+
+\begin{figure}[h]
+    \caption{Performance of the 3-loop implementation with transposition with different flags.}
+    \label{tab:transposed flags}
+    \begin{tabular}{c | c | c}
+	Time in seconds & ffast-math & no ffast-math \\
+	no march=native / no funroll-loops & 0.79 & 2.87 \\
+	march=native / no funroll-loops & 0.56 & 2.90 \\
+	no march=native / funroll-loops & 0.75 & 2.86 \\
+	march=native / funroll-loops & 0.48 &  2.86
+    \end{tabular}
+\end{figure}
+
+
+\begin{figure}[h]
+    \caption{Performance of the 3-loop implementation with transposition and every flag.}
+    \label{fig:transposed}
+    \includegraphics[width=0.8\textwidth]{../saveC/transposed.png}
+\end{figure}
+\paragraph{Vectorization.}
+With vectorization, 8 multiplications are done simultaneously.
+This makes the code twice faster when using only O1, O2 or O3 flag.
+However, when using ffast-math, the results are the same that without vectorization.
+The compiler might have already done such optimization.
+Furthermore, the memory bandwidth is still the bottleneck (cf. figure \ref{fig:Cvectorized}).
+
+\begin{figure}[h]
+    \caption{Performance of the 3-loop implementation with transposition and vectoization.}
+    \label{fig:Cvectorized}
+    \includegraphics[width=0.8\textwidth]{../saveC/Cvectorized.png}
+\end{figure}
+
+\paragraph{Kernel.}
+Using a kernel avoids to reload the same data multiple times.
+Best results were found with a kernel of 16x6 and using the flags O2, ffast-math, funroll-loops, march=native.
+This kernel optimality comes from its small size: it entirely fits in the AVX2 registers.
+For small matrix size, it achieves 70\% of openBLAS, but the figure \ref{fig:v5} illustrates a fast performance drop when the matrix size increase.
+
+
+\begin{figure}[h]
+    \caption{Performance of the kernel implementation.}
+    \label{fig:v5}
+    \includegraphics[width=0.8\textwidth]{../saveC/v5.png}
+\end{figure}
+
+\paragraph{Blocked matrix with kernel.}
+The fastest blocks were those with $b_M = 64$, $b_N = 240$ and $b_K = 480$.
+For a matrix size of 3840, it takes 1.07s while openBLAS takes 1.07s.
+This implementation achieves 72\% of openBLAS.
+Moreover, there is no performance drop when the matrix size increases anymore as shown in \ref{fig:v6}.
+I don't have the explanation for the drop at 7680.
+
+\begin{figure}[h]
+    \caption{Performance of the blocked matrix with kernel implementation.}
+    \label{fig:v6}
+    \includegraphics[width=0.8\textwidth]{../saveC/v6_moyenne.png}
+\end{figure}
+\FloatBarrier
+\section{Parallelization}
+Increasing the number of threads increases the overall performance.
+However, the performance is not linear in the number of threads (cf. figure \ref{fig:threads flops} and \ref{fig:threads speedup}).
+OpenBLAS implementation has a huge drop going from 8 to 9 threads.
+Since there are 8 P-cores on the test machine, openBLAS might poorly handle P and E cores simulteanously.
+
+
+\begin{figure}[h]
+    \caption{Flops of multithreaded blocked matrix with kernel implementation compared to openBLAS. Matrix size is 9600x9600.}
+    \label{fig:threads flops}
+    \includegraphics[width=0.8\textwidth]{../saveC/threads_flops9600.png}
+\end{figure}
+\begin{figure}[h]
+    \caption{Speedup of multithreaded blocked matrix with kernel implementation. Matrix size is 9600x9600.}
+    \label{fig:threads speedup}
+    \includegraphics[width=0.8\textwidth]{../saveC/threads_speedup9600.png}
+\end{figure}
+
+\FloatBarrier
+\section{GPU with CUDA}
+In this section, the computation are done on an Nvidia T4 GPU.
+
+\paragraph{cuBLAS implementation.}
+The cuBLAS library multiplies matrices of size 4096 in 0.03 seconds on a T4 GPU, which is 2317 GFLOPS.
+This is 30 times faster than openBLAS running on a single core on the test CPU and 15 times faster than openBLAS on 8 cores.
+
+
+\begin{figure}[h]
+    \caption{Number of operations per second on T4 GPU with cuBLAS depending on the matrix size}
+    \label{fig:cuBLAS GFlops}
+    \includegraphics[width=0.8\textwidth]{../saveGPU/cuBLAS_GFlops.png}
+\end{figure}
+
+On the figure \ref{fig:cuBLAS GFlops}, the GPU performance is beetween 1700 and 2300 GFlops, which is beetwen 12 and 16 times faster than multithreaded openBLAS.
+
+The T4 GPU has 28 GFLOPS/W while the CPU (using openBLAS on 8 cores) has 6 GFLOPS/W.
+The GPU is almost 5 times more efficient.
+
+\begin{figure}[h]
+    \caption{Number of operations per second on T4 GPU with naive CUDA implementation depending on the matrix size}
+    \label{fig:cuda naive GFlops}
+    \includegraphics[width=0.8\textwidth]{../saveGPU/cuda_naive_GFlops.png}
+\end{figure}
+
+\paragraph{Naive implementation.}
+The CUDA naive implementation is really slow, with 19 GFLOPS for matrices of size 4096 (cf. figure \ref{fig:cuda naive GFlops}).
+This is 3 times worse than single thread openBLAS and 20 times worse than openBLAS with 8 threads. 
+It achieves only 1\% of cuBLAS.
+
+\begin{figure}[h]
+    \caption{Number of operations per second on T4 GPU with cuTLASS implementation depending on the matrix size}
+    \label{fig:cutLASS}
+    \includegraphics[width=0.8\textwidth]{../saveGPU/cuda_custom_GFlops.png}
+\end{figure}
+
+\paragraph{cuTLASS implementation.}
+The custom cuTLASS implementation is around 1100 GFLOPS (cf. figure \ref{fig:cutLASS}), which is half the cuBLAS performance.
+
+\begin{figure}[h]
+    \caption{Number of operations per second on T4 GPU with FP16 precision depending on the matrix size}
+    \label{fig:FP16}
+    \includegraphics[width=0.8\textwidth]{../saveGPU/cuBLAS_FP16_GFlops.png}
+\end{figure}
+
+\paragraph{FP16 precision.}
+When the precision is reduces to FP16, the matrix multiplication on T4 GPU achieves 17000 GFLOPS.
+It is 8 times faster than FP32, which is consistent with the theoretical capacities of the T4 GPU being 8 times faster for FP16 than FP32.
+It is still 4 times slower than the thoeoritical capabilities of this GPU.
+
+\FloatBarrier
+\section{CNN optimization}
+In this section, all computations are done on a T4 GPU on Google Collab.
+
+\paragraph{First augmentation of the dataset.}
+I started by experimenting on different augmentations of the dataset, keeping the original backbone.
+The options I used are the horizontal flip, the color jitter, the coarse dropout and the channel dropout.
+Accuracy stayed between 78\% and 82\%.
+Training the model with 50\% of gray-scaled images also achieves those performance, but with longer training steps.
+
+\paragraph{Experimenting with the architecture.}
+I implemented other architectures to achieve better accuracy.
+First, I changed the network to take 128x128 images, while keeping the same layers.
+It did not change the accuracy, the network was just slower.
+To make it faster, I added an initial pull layer to convert to size 64x64.
+It was predictible that the accuracy would be lower than just taking 64x64 as entries for the network, but I did not expect the only 56\% accuracy after training.
+
+Then I used deeper neural networks.
+With 5 convulutional layers, all with 3x3 feature size, and 3 sense layers, I achieved 86.91\% accuracy.
+
+I also tried implemented a fully convulutional network : 5 layers of 3x3 convolution and 2x2 pooling, with feature size doubling at each layer, and an ending dense layer.
+I also tried a fully dense network, with 3 dense layers.
+It was really slow to train and had poor accuracy (60 5\%).
+
+\paragraph{Normalization layers.}
+I went back to the deep architecture with 5 convolutional layers and 3 dense ones, and added normalization layers between each one. It only achieves 84\% accuracy.
+
+A fully convulutional network with a single convulutional layer before the first pool and then 3 convulutional layers and a normalization layer between each pool (4 times) achieved 90.9\% accuracy but found out to be a little bit too slow.
+Replacing the first set of 3 convolutional layers with a single one was still too slow.
+To gain a little bit efficiency, I inverted the first normalizing and pulling layers.
+The network was now running in about 295 ms, and achieved 89.26\%.
+Adding data augmentation, the accuracy rised to 90.58\%.
+
+I tried augmenting the size of the dense layers, but i went too far : my network had 9 million parameters.
+The network overfitted the data and classified all test images as dogs.
+
+I ended by returning to 64x64 images. I tried the same things which all achieved around 90\%.
+
+
+\end{document}
